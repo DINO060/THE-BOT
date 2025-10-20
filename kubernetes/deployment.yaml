@@ -1,0 +1,148 @@
+# ==================== kubernetes/deployment.yaml ====================
+"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bot-api
+  namespace: bot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bot-api
+  template:
+    metadata:
+      labels:
+        app: bot-api
+    spec:
+      containers:
+      - name: bot-api
+        image: ghcr.io/yourusername/telegram-bot-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: bot-token
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: database-url
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bot-worker
+  namespace: bot
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: bot-worker
+  template:
+    metadata:
+      labels:
+        app: bot-worker
+    spec:
+      containers:
+      - name: bot-worker
+        image: ghcr.io/yourusername/telegram-bot-worker:latest
+        env:
+        - name: CELERY_BROKER_URL
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: celery-broker-url
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1000m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bot-api
+  namespace: bot
+spec:
+  selector:
+    app: bot-api
+  ports:
+  - port: 80
+    targetPort: 8000
+  type: LoadBalancer
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bot-api-hpa
+  namespace: bot
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bot-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bot-worker-hpa
+  namespace: bot
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bot-worker
+  minReplicas: 5
+  maxReplicas: 50
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: rabbitmq_queue_messages_ready
+        selector:
+          matchLabels:
+            queue: downloads
+      target:
+        type: AverageValue
+        averageValue: "10"
+"""

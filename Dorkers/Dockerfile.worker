@@ -1,0 +1,101 @@
+# ==================== docker/Dockerfile.worker ====================
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/ ./src/
+
+# Create necessary directories
+RUN mkdir -p /app/temp /app/logs
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV C_FORCE_ROOT=true
+
+# Run Celery worker
+CMD ["celery", "-A", "src.workers.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+
+
+# ==================== nginx.conf ====================
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream bot_api {
+        server bot-api:8000;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        client_max_body_size 2048M;
+        client_body_timeout 3600s;
+        client_header_timeout 3600s;
+        keepalive_timeout 3600s;
+        send_timeout 3600s;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+        limit_req zone=api_limit burst=20 nodelay;
+
+        # Webhook endpoint
+        location /webhook {
+            proxy_pass http://bot_api;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Health check
+        location /health {
+            proxy_pass http://bot_api/health;
+            access_log off;
+        }
+
+        # Metrics endpoint (internal only)
+        location /metrics {
+            proxy_pass http://bot_api/metrics;
+            allow 10.0.0.0/8;
+            deny all;
+        }
+
+        # Static files (if any)
+        location /static {
+            alias /app/static;
+            expires 30d;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Default
+        location / {
+            return 404;
+        }
+    }
+}
+
+

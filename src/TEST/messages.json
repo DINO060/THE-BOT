@@ -1,0 +1,38 @@
+# ==================== locales/en/messages.json ====================
+{
+  "welcome_message": "👋 Welcome to {bot_name}, {name}!\n\nI can download videos, audio, and images from various platforms.\n\nJust send me a URL to get started!",
+  "help_message": "📖 <b>How to use this bot:</b>\n\n1️⃣ Send a URL from supported platforms\n2️⃣ Choose download options\n3️⃣ Receive your media file\n\n<b>Supported platforms:</b>\n• YouTube\n• Instagram\n• TikTok\n• Twitter\n• And 1000+ more!\n\n<b>Commands:</b>\n/start - Start the bot\n/help - Show this message\n/settings - Configure preferences\n/premium - Upgrade to Premium\n/cancel - Cancel current operation",
+  "invalid_input": "❌ Please send a valid URL",
+  "download_started": "⏳ Download started! Please wait...",
+  "download_completed": "✅ Download completed!",
+  "download_failed": "❌ Download failed. Please try again.",
+  "quota_exceeded": "⚠️ Daily quota exceeded! Upgrade to Premium for unlimited downloads.",
+  "premium_info": "⭐ <b>Premium Features:</b>\n\n✅ Unlimited downloads\n✅ Higher quality\n✅ Faster processing\n✅ Priority support\n✅ No ads\n✅ Batch downloads\n\n💰 Price: $4.99/month",
+  "settings_message": "⚙️ <b>Settings:</b>\n\nLanguage: {language}\nQuality: {quality}\nFormat: {format}",
+  "btn_download": "📥 Download",
+  "btn_help": "📖 Help",
+  "btn_settings": "⚙️ Settings",
+  "btn_premium": "⭐ Premium",
+  "btn_cancel": "❌ Cancel",
+  "error_generic": "❌ An error occurred. Please try again.",
+  "error_rate_limit": "⚠️ Too many requests. Please wait a moment.",
+  "error_banned": "❌ Your account has been banned.",
+  "maintenance_mode": "🔧 Bot is under maintenance. Please try again later."
+}
+
+
+# ==================== locales/fr/messages.json ====================
+{
+  "welcome_message": "👋 Bienvenue sur {bot_name}, {name}!\n\nJe peux télécharger des vidéos, de l'audio et des images depuis diverses plateformes.\n\nEnvoyez-moi simplement une URL pour commencer!",
+  "help_message": "📖 <b>Comment utiliser ce bot:</b>\n\n1️⃣ Envoyez une URL depuis les plateformes supportées\n2️⃣ Choisissez les options de téléchargement\n3️⃣ Recevez votre fichier média\n\n<b>Plateformes supportées:</b>\n• YouTube\n• Instagram\n• TikTok\n• Twitter\n• Et plus de 1000 autres!",
+  "invalid_input": "❌ Veuillez envoyer une URL valide",
+  "download_started": "⏳ Téléchargement commencé! Veuillez patienter...",
+  "download_completed": "✅ Téléchargement terminé!",
+  "download_failed": "❌ Échec du téléchargement. Veuillez réessayer.",
+  "quota_exceeded": "⚠️ Quota journalier dépassé! Passez à Premium pour des téléchargements illimités.",
+  "btn_download": "📥 Télécharger",
+  "btn_help": "📖 Aide",
+  "btn_settings": "⚙️ Paramètres",
+  "btn_premium": "⭐ Premium",
+  "btn_cancel": "❌ Annuler"
+}

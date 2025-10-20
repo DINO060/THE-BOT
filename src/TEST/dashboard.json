@@ -1,0 +1,82 @@
+# ==================== monitoring/grafana/dashboard.json ====================
+"""
+{
+  "dashboard": {
+    "title": "Telegram Bot Monitoring",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(bot_requests_total[1m])) by (handler)"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(bot_errors_total[1m])) by (error_type)"
+          }
+        ]
+      },
+      {
+        "title": "Active Users",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "bot_active_users"
+          }
+        ]
+      },
+      {
+        "title": "Downloads",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(bot_downloads_total[5m])) by (media_type)"
+          }
+        ]
+      },
+      {
+        "title": "Cache Hit Rate",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "sum(rate(bot_cache_hits_total[5m])) / (sum(rate(bot_cache_hits_total[5m])) + sum(rate(bot_cache_misses_total[5m])))"
+          }
+        ]
+      },
+      {
+        "title": "Queue Size",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "bot_queue_size by (queue_name)"
+          }
+        ]
+      },
+      {
+        "title": "Response Time (P95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(bot_request_duration_seconds_bucket[5m])) by (handler)"
+          }
+        ]
+      },
+      {
+        "title": "File Sizes",
+        "type": "heatmap",
+        "targets": [
+          {
+            "expr": "sum(rate(bot_file_size_bytes_bucket[5m])) by (le, media_type)"
+          }
+        ]
+      }
+    ]
+  }
+}
+"""

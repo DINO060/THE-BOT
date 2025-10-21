@@ -3,7 +3,7 @@
 
 import os
 import hashlib
-from typing import Optional, Dict, Any, BinaryIO
+from typing import Optional, Dict, Any, BinaryIO, List
 from pathlib import Path
 import asyncio
 from datetime import datetime, timedelta

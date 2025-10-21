@@ -1,0 +1,373 @@
+# CODE COMPLET DU PLUGIN MANGA TO PDF
+# Copiez ce code dans src/plugins/manga/manga_plugin.py
+
+"""Manga plugin with PDF generation"""
+
+import asyncio
+import os
+import tempfile
+from typing import Dict, Any, Optional, Tuple, List
+from pathlib import Path
+import logging
+import re
+import subprocess
+
+try:
+    import img2pdf
+    from PIL import Image, ImageEnhance
+    from playwright.async_api import async_playwright, Page
+    import aiohttp
+except ImportError as e:
+    print(f'Warning: Missing dependency for manga plugin: {e}')
+    print('Install with: pip install img2pdf Pillow playwright aiohttp')
+
+from src.plugins.base import BasePlugin, PluginInfo
+from src.core.exceptions import DownloadError
+
+
+class MangaPlugin(BasePlugin):
+    """Manga scraper and PDF generator"""
+    
+    def __init__(self):
+        super().__init__()
+        self.logger = logging.getLogger(self.__class__.__name__)
+    
+    @property
+    def info(self) -> PluginInfo:
+        return PluginInfo(
+            name='manga',
+            version='1.0.0',
+            author='BotTeam',
+            description='Manga chapter to PDF converter',
+            supported_domains=[
+                'mangadex.org', 'mangareader.to', 'manganato.com',
+                'mangakakalot.com', 'mangapark.net', 'readmanga.app'
+            ],
+            supported_types=['manga', 'pdf'],
+            priority=80
+        )
+    
+    def can_handle(self, url: str) -> bool:
+        """Check if URL is a manga chapter"""
+        manga_patterns = [
+            r'mangadex\.org/chapter/',
+            r'mangareader\.(to|net)/read/',
+            r'manganato\.com/manga-.*/chapter',
+            r'mangakakalot\.com/chapter/',
+            r'mangapark\.net/manga/.*/c\d+',
+            r'readmanga\.app/[^/]+/chapter',
+        ]
+        
+        for pattern in manga_patterns:
+            if re.search(pattern, url):
+                return True
+        return False
+    
+    async def extract_info(self, url: str) -> Optional[Dict[str, Any]]:
+        """Extract manga chapter information"""
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--disable-blink-features=AutomationControlled']
+                )
+                
+                context = await browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                )
+                
+                # Anti-detection
+                await context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                """)
+                
+                page = await context.new_page()
+                
+                try:
+                    await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                    
+                    # Extract manga info based on site
+                    if 'mangadex' in url:
+                        info = await self._extract_mangadex(page)
+                    elif 'mangareader' in url:
+                        info = await self._extract_mangareader(page)
+                    elif 'manganato' in url:
+                        info = await self._extract_manganato(page)
+                    else:
+                        info = await self._extract_generic(page)
+                    
+                    return info
+                    
+                finally:
+                    await browser.close()
+        except Exception as e:
+            self.logger.error(f'Extract info failed: {e}')
+            return None
+    
+    async def _extract_mangadex(self, page: Page) -> Dict[str, Any]:
+        """Extract from MangaDex"""
+        await page.wait_for_selector('img[data-index]', timeout=30000)
+        
+        images = await page.evaluate("""
+            () => {
+                const imgs = Array.from(document.querySelectorAll('img[data-index]'));
+                return imgs.map(img => img.src);
+            }
+        """)
+        
+        title = await page.text_content('h1') or 'Unknown Chapter'
+        
+        return {
+            'title': title,
+            'images': images,
+            'page_count': len(images),
+            'site': 'mangadex'
+        }
+    
+    async def _extract_mangareader(self, page: Page) -> Dict[str, Any]:
+        """Extract from MangaReader"""
+        await self._scroll_to_load_images(page)
+        
+        images = await page.evaluate("""
+            () => {
+                const imgs = Array.from(document.querySelectorAll('.reading-content img'));
+                return imgs.map(img => img.dataset.src || img.src);
+            }
+        """)
+        
+        title = await page.text_content('.breadcrumb .active') or 'Chapter'
+        
+        return {
+            'title': title,
+            'images': images,
+            'page_count': len(images),
+            'site': 'mangareader'
+        }
+    
+    async def _extract_manganato(self, page: Page) -> Dict[str, Any]:
+        """Extract from Manganato"""
+        await self._scroll_to_load_images(page)
+        
+        images = await page.evaluate("""
+            () => {
+                const imgs = Array.from(document.querySelectorAll('.container-chapter-reader img'));
+                return imgs.map(img => img.src);
+            }
+        """)
+        
+        title = await page.text_content('.panel-chapter-info-top h1') or 'Chapter'
+        
+        return {
+            'title': title,
+            'images': images,
+            'page_count': len(images),
+            'site': 'manganato'
+        }
+    
+    async def _extract_generic(self, page: Page) -> Dict[str, Any]:
+        """Generic manga extraction"""
+        await self._scroll_to_load_images(page)
+        await page.wait_for_timeout(2000)
+        
+        images = await page.evaluate("""
+            () => {
+                let imgs = document.querySelectorAll('.page-break img, .reading-content img, img.wp-manga-chapter-img, .viewer-cnt img');
+                if (imgs.length === 0) {
+                    imgs = document.querySelectorAll('img[data-src], img[src*="manga"], img[src*="chapter"]');
+                }
+                
+                return Array.from(imgs).map(img => {
+                    return img.dataset.src || img.src;
+                }).filter(src => src && !src.includes('logo') && !src.includes('banner'));
+            }
+        """)
+        
+        title = await page.evaluate("""
+            () => {
+                const h1 = document.querySelector('h1, .chapter-title, .breadcrumb .active');
+                return h1 ? h1.innerText : 'Manga Chapter';
+            }
+        """)
+        
+        return {
+            'title': title,
+            'images': images,
+            'page_count': len(images)
+        }
+    
+    async def _scroll_to_load_images(self, page: Page):
+        """Scroll page to trigger lazy loading"""
+        await page.evaluate("""
+            async () => {
+                const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+                const scrollHeight = document.documentElement.scrollHeight;
+                const step = 500;
+                
+                for (let i = 0; i < scrollHeight; i += step) {
+                    window.scrollTo(0, i);
+                    await delay(100);
+                }
+                
+                window.scrollTo(0, scrollHeight);
+                await delay(1000);
+                window.scrollTo(0, 0);
+            }
+        """)
+    
+    async def download(
+        self,
+        url: str,
+        output_path: str,
+        options: Dict[str, Any] = None
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """Download manga chapter as PDF"""
+        
+        info = await self.extract_info(url)
+        if not info or not info.get('images'):
+            return False, None, {'error': 'No images found'}
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Download all images
+            image_paths = await self._download_images(
+                info['images'], 
+                temp_path
+            )
+            
+            if not image_paths:
+                return False, None, {'error': 'Failed to download images'}
+            
+            # Optimize images
+            optimized_paths = await self._optimize_images(image_paths)
+            
+            # Generate PDF
+            pdf_path = f'{output_path}.pdf'
+            success = await self._generate_pdf(optimized_paths, pdf_path)
+            
+            if not success:
+                return False, None, {'error': 'Failed to generate PDF'}
+            
+            # Check file size
+            file_size = os.path.getsize(pdf_path)
+            if file_size > 50 * 1024 * 1024:  # 50MB limit
+                compressed_path = await self._compress_pdf(pdf_path)
+                if compressed_path:
+                    os.remove(pdf_path)
+                    pdf_path = compressed_path
+            
+            info['file_size'] = os.path.getsize(pdf_path)
+            return True, pdf_path, info
+    
+    async def _download_images(
+        self, 
+        image_urls: List[str], 
+        temp_path: Path
+    ) -> List[str]:
+        """Download manga images"""
+        downloaded = []
+        
+        async with aiohttp.ClientSession() as session:
+            for i, url in enumerate(image_urls):
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0',
+                        'Referer': url.split('/')[2] if '/' in url else ''
+                    }
+                    
+                    async with session.get(url, headers=headers, timeout=30) as response:
+                        if response.status == 200:
+                            content = await response.read()
+                            
+                            image_path = temp_path / f'page_{i:03d}.jpg'
+                            with open(image_path, 'wb') as f:
+                                f.write(content)
+                            
+                            downloaded.append(str(image_path))
+                            
+                except Exception as e:
+                    self.logger.error(f'Failed to download image {i}: {e}')
+        
+        return downloaded
+    
+    async def _optimize_images(self, image_paths: List[str]) -> List[str]:
+        """Optimize manga images for PDF"""
+        optimized = []
+        
+        for path in image_paths:
+            try:
+                img = Image.open(path)
+                
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Enhance contrast for manga
+                enhancer = ImageEnhance.Contrast(img)
+                img = enhancer.enhance(1.2)
+                
+                # Enhance sharpness
+                enhancer = ImageEnhance.Sharpness(img)
+                img = enhancer.enhance(1.1)
+                
+                # Resize if too large
+                max_width = 1600
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_height = int(img.height * ratio)
+                    img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+                
+                optimized_path = path.replace('.jpg', '_opt.jpg')
+                img.save(optimized_path, 'JPEG', quality=85, optimize=True)
+                optimized.append(optimized_path)
+                
+            except Exception as e:
+                self.logger.error(f'Failed to optimize image: {e}')
+                optimized.append(path)
+        
+        return optimized
+    
+    async def _generate_pdf(
+        self, 
+        image_paths: List[str], 
+        output_path: str
+    ) -> bool:
+        """Generate PDF from images"""
+        try:
+            image_paths.sort()
+            
+            with open(output_path, 'wb') as f:
+                f.write(img2pdf.convert(image_paths))
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f'PDF generation failed: {e}')
+            return False
+    
+    async def _compress_pdf(self, pdf_path: str) -> Optional[str]:
+        """Compress PDF if too large"""
+        try:
+            compressed_path = pdf_path.replace('.pdf', '_compressed.pdf')
+            
+            # Try ghostscript compression
+            cmd = [
+                'gs', '-sDEVICE=pdfwrite',
+                '-dCompatibilityLevel=1.4',
+                '-dPDFSETTINGS=/ebook',
+                '-dNOPAUSE', '-dQUIET', '-dBATCH',
+                f'-sOutputFile={compressed_path}',
+                pdf_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, shell=True)
+            
+            if result.returncode == 0:
+                return compressed_path
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f'PDF compression failed: {e}')
+            return None

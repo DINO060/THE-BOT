@@ -1,0 +1,48 @@
+# ========================================
+# TELEGRAM BOT CONFIGURATION
+# ========================================
+# Get your bot token from @BotFather on Telegram
+BOT_TOKEN=your_bot_token_from_botfather
+
+# ========================================
+# DATABASE CONFIGURATION
+# ========================================
+# For local testing, you can use SQLite
+DATABASE_URL=sqlite:///bot.db
+# For production, use PostgreSQL
+# DATABASE_URL=postgresql://bot_user:password@localhost:5432/bot_db
+
+# ========================================
+# REDIS CACHE
+# ========================================
+REDIS_URL=redis://localhost:6379/0
+
+# ========================================
+# STORAGE (MinIO/S3)
+# ========================================
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=media-bot
+MINIO_USE_SSL=false
+
+# ========================================
+# SECURITY
+# ========================================
+# Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+ENCRYPTION_KEY=your_encryption_key_here
+JWT_SECRET_KEY=your_jwt_secret_key_here
+
+# ========================================
+# ENVIRONMENT
+# ========================================
+ENVIRONMENT=development
+DEBUG=true
+LOG_LEVEL=INFO
+
+# ========================================
+# USER QUOTAS
+# ========================================
+FREE_DAILY_QUOTA=5
+PREMIUM_DAILY_QUOTA=999
+MAX_FILE_SIZE=50000000  # 50MB in bytes

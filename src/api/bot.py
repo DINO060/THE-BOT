@@ -3,7 +3,9 @@
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+import os
+import hashlib
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,6 +14,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ConversationHandler,
     filters,
     ContextTypes,
 )
@@ -19,10 +22,11 @@ from telegram.error import TelegramError
 
 from src.core.config import settings
 from src.core.database import get_db, User, UserRole
+from sqlalchemy import select
 from src.core.cache import cache
 from src.core.security import SecurityManager, RateLimiter, rate_limit
 from src.core.monitoring import monitoring, metrics
-from src.core.exceptions import BotException, RateLimitError
+from src.core.exceptions import BotException, RateLimitError, SecurityError
 from src.plugins.base import plugin_manager
 from src.workers.tasks.download import process_media_download
 from src.utils.i18n import I18n
@@ -64,6 +68,9 @@ class ProductionBot:
         # Start monitoring
         if settings.enable_monitoring:
             asyncio.create_task(self._export_metrics())
+        
+        # Setup task listeners for download notifications
+        await self.setup_task_listeners()
         
         self.logger.info("Bot setup completed")
     
@@ -191,6 +198,228 @@ class ProductionBot:
         
         # Track metrics
         metrics.requests_total.labels(handler="start", status="success").inc()
+    
+    @monitoring.track_performance("cmd_premium")
+    @rate_limit(requests=5, window=60)
+    async def cmd_premium(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Premium subscription command with Stripe integration"""
+        user_id = update.effective_user.id
+        
+        async with get_db() as db:
+            result = await db.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                await update.message.reply_text("❌ User not found")
+                return
+        
+        # Check if already premium
+        if user.is_premium and user.premium_until and user.premium_until > datetime.utcnow():
+            days_left = (user.premium_until - datetime.utcnow()).days
+            await update.message.reply_text(
+                f"⭐ You're already Premium!\n\n"
+                f"Expires in: {days_left} days\n\n"
+                f"Manage subscription: /settings"
+            )
+            return
+        
+        # Create Stripe checkout session
+        if settings.stripe_api_key:
+            checkout_url = await self.payment_service.create_checkout_session(
+                user_id, "premium_monthly"
+            )
+            
+            if checkout_url:
+                await update.message.reply_text(
+                    f"⭐ <b>Upgrade to Premium!</b>\n\n"
+                    f"Click here to complete payment:\n"
+                    f"{checkout_url}\n\n"
+                    f"After payment, you'll receive Premium instantly!",
+                    parse_mode="HTML"
+                )
+            else:
+                await update.message.reply_text("❌ Payment system unavailable")
+        else:
+            # Show premium info without payment
+            await update.message.reply_text(
+                "⭐ Premium features coming soon!",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="menu:main")
+                ]])
+            )
+    
+    @monitoring.track_performance("cmd_help")
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Help command"""
+        help_text = """
+📚 <b>How to use this bot:</b>
+
+1️⃣ Send me a URL from supported platforms
+2️⃣ Choose download options
+3️⃣ Wait for processing
+4️⃣ Receive your file!
+
+<b>Supported platforms:</b>
+• YouTube
+• Instagram
+• TikTok
+• Twitter/X
+• Facebook
+• Reddit
+• Manga sites (PDF conversion)
+
+<b>Commands:</b>
+/start - Main menu
+/help - This message
+/download - Download interface
+/status - Check your quota
+/settings - User settings
+/premium - Upgrade account
+
+<b>Daily Limits:</b>
+• Free: 5 downloads/day
+• Premium: Unlimited
+
+<b>Need help?</b> Contact @support
+        """
+        
+        await update.message.reply_text(help_text, parse_mode="HTML")
+    
+    @monitoring.track_performance("cmd_download")
+    async def cmd_download(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Download command - prompts for URL"""
+        await update.message.reply_text(
+            "📥 <b>Send me a URL to download!</b>\n\n"
+            "Supported: YouTube, Instagram, TikTok, Manga, and more!\n\n"
+            "Just paste the URL and I'll handle the rest.",
+            parse_mode="HTML"
+        )
+    
+    @monitoring.track_performance("cmd_status")
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Status command - shows user quota and stats"""
+        user_id = update.effective_user.id
+        
+        async with get_db() as db:
+            result = await db.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                await update.message.reply_text("❌ User not found")
+                return
+        
+        # Calculate quota
+        quota_used = user.daily_quota_used
+        quota_limit = user.daily_quota_limit if not user.is_premium else "∞"
+        reset_time = user.quota_reset_at.strftime("%H:%M UTC")
+        
+        status_text = f"""
+📊 <b>Your Status</b>
+
+👤 User: {update.effective_user.first_name}
+⭐ Plan: {"Premium" if user.is_premium else "Free"}
+📥 Downloads today: {quota_used}/{quota_limit}
+🔄 Resets at: {reset_time}
+📅 Member since: {user.created_at.strftime("%Y-%m-%d")}
+
+Total downloads: {user.total_downloads}
+        """
+        
+        if user.is_premium and user.premium_until:
+            days_left = (user.premium_until - datetime.utcnow()).days
+            status_text += f"\n⏰ Premium expires in: {days_left} days"
+        
+        await update.message.reply_text(status_text, parse_mode="HTML")
+    
+    @monitoring.track_performance("cmd_settings")
+    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Settings command"""
+        keyboard = [
+            [
+                InlineKeyboardButton("🌍 Language", callback_data="settings:language"),
+                InlineKeyboardButton("🔔 Notifications", callback_data="settings:notifications")
+            ],
+            [
+                InlineKeyboardButton("📊 Quality", callback_data="settings:quality"),
+                InlineKeyboardButton("💾 Format", callback_data="settings:format")
+            ],
+            [InlineKeyboardButton("🔙 Back", callback_data="menu:main")]
+        ]
+        
+        await update.message.reply_text(
+            "⚙️ <b>Settings</b>\n\nChoose an option to configure:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+    
+    @monitoring.track_performance("cmd_cancel")
+    async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel current operation"""
+        await update.message.reply_text("✅ Operation cancelled")
+        return ConversationHandler.END
+    
+    @monitoring.track_performance("cmd_admin")
+    @rate_limit(requests=10, window=60)
+    async def cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin panel command"""
+        user_id = update.effective_user.id
+        
+        # Check admin permission
+        async with get_db() as db:
+            result = await db.execute(
+                select(User).where(User.telegram_id == user_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user or user.role != UserRole.ADMIN:
+                await update.message.reply_text("❌ Unauthorized")
+                return
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Statistics", callback_data="admin:stats"),
+                InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast")
+            ],
+            [
+                InlineKeyboardButton("👥 Users", callback_data="admin:users"),
+                InlineKeyboardButton("⚙️ Config", callback_data="admin:config")
+            ],
+            [InlineKeyboardButton("🔙 Back", callback_data="menu:main")]
+        ]
+        
+        await update.message.reply_text(
+            "🔧 <b>Admin Panel</b>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+    
+    @monitoring.track_performance("cmd_broadcast")
+    async def cmd_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Broadcast message to all users (admin only)"""
+        # Implementation for broadcast
+        pass
+    
+    @monitoring.track_performance("cmd_stats")
+    async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show bot statistics (admin only)"""
+        # Implementation for stats
+        pass
+    
+    @monitoring.track_performance("cmd_ban")
+    async def cmd_ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ban user (admin only)"""
+        # Implementation for ban
+        pass
+    
+    @monitoring.track_performance("cmd_unban")
+    async def cmd_unban(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Unban user (admin only)"""
+        # Implementation for unban
+        pass
     
     @monitoring.track_performance("handle_message")
     @rate_limit(requests=10, window=60)
@@ -396,6 +625,71 @@ class ProductionBot:
                 self.logger.error(f"Metrics export failed: {e}")
             
             await asyncio.sleep(60)  # Every minute
+    
+    async def handle_download_complete(self, task_id: str, user_id: int, result: Dict):
+        """Handle completed download and send file to user"""
+        try:
+            if result.get('success'):
+                # Get file from S3
+                file_url = result.get('url')
+                metadata = result.get('metadata', {})
+                
+                # Send file to user
+                await self.app.bot.send_document(
+                    chat_id=user_id,
+                    document=file_url,
+                    caption=f"✅ Download complete!\n\n"
+                            f"📎 {metadata.get('title', 'File')}\n"
+                            f"📦 Size: {result.get('file_size', 0) / 1024 / 1024:.1f} MB",
+                    parse_mode="HTML"
+                )
+            else:
+                # Send error message
+                await self.app.bot.send_message(
+                    chat_id=user_id,
+                    text=f"❌ Download failed: {result.get('error', 'Unknown error')}"
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to send download result: {e}")
+    
+    async def setup_task_listeners(self):
+        """Setup Celery task result listeners"""
+        from src.workers.celery_app import celery_app
+        from celery.result import AsyncResult
+        
+        # Poll for completed tasks periodically
+        asyncio.create_task(self._poll_task_results())
+    
+    async def _poll_task_results(self):
+        """Poll for completed download tasks"""
+        while True:
+            try:
+                # Get all pending tasks from cache
+                pattern = "user_tasks:*"
+                tasks = await cache.redis.scan_iter(match=pattern)
+                
+                for task_key in tasks:
+                    task_data = await cache.get("user_tasks", task_key)
+                    if task_data:
+                        task_id = task_data['task_id']
+                        user_id = int(task_key.split(':')[1])
+                        
+                        # Check task status
+                        from celery.result import AsyncResult
+                        result = AsyncResult(task_id)
+                        
+                        if result.ready():
+                            # Task completed
+                            task_result = result.get()
+                            await self.handle_download_complete(task_id, user_id, task_result)
+                            
+                            # Clean up cache
+                            await cache.delete("user_tasks", task_key)
+                            
+            except Exception as e:
+                self.logger.error(f"Error polling task results: {e}")
+            
+            await asyncio.sleep(5)  # Check every 5 seconds
     
     async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Global error handler"""

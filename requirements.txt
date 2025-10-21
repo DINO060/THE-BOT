@@ -1,5 +1,4 @@
-# 2. **requirements.txt** - Dépendances production
-```txt
+# Production Dependencies
 # Core
 python-telegram-bot[webhooks,rate-limiter]==20.7
 pyrogram==2.0.106
